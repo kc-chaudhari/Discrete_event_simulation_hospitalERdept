@@ -1,37 +1,47 @@
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
-from ER_simulation import simulate, process_sim_output
+from ER_simulation_1 import simulate, process_sim_output
+import contextlib
+import io
 
 # Define scenarios to explore
 scenarios = [
     {
         'num_triage_nurses': 5,
         'num_doctors': 5,
+        'registration_time_mean': 1.0,
+        'registration_time_sd': 0.1,
+        'triage_check_mean': 5.0,
+        'triage_check_sd': 1.0,
         'triage_time_mean': 5.0,
         'triage_time_sd': 1.0,
         'treatment_time_mean': 20.0,
         'treatment_time_sd': 5.0,
         'discharge_time_mean': 5.0,
         'discharge_time_sd': 1.0,
-        'stoptime': 480,
-        'num_reps': 15,
+        'stoptime': 1440,
+        'num_reps': 30,
         'seed': 4470,
         'output_path': 'output',
         'scenario': 'baseline',
         'quiet': True
     },
-     {
+    {
         'num_triage_nurses': 5,
         'num_doctors': 10,
+        'registration_time_mean': 1,
+        'registration_time_sd': 0.1,
+        'triage_check_mean': 5.0,
+        'triage_check_sd': 1.0,
         'triage_time_mean': 5.0,
         'triage_time_sd': 1.0,
         'treatment_time_mean': 20.0,
         'treatment_time_sd': 5.0,
         'discharge_time_mean': 5.0,
         'discharge_time_sd': 1.0,
-        'stoptime': 480,
-        'num_reps': 15,
+        'stoptime': 1440,
+        'num_reps': 30,
         'seed': 4470,
         'output_path': 'output',
         'scenario': 'n5d10',
@@ -44,10 +54,13 @@ scenarios = [
 def run_simulation(scenario):
     num_reps = scenario['num_reps']
     output_dir = Path.cwd() / scenario['output_path']
-    
-    # Run simulations
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Run simulations with suppressed output
     for i in range(1, num_reps + 1):
-        simulate(scenario, i)
+        f = io.StringIO()
+        with contextlib.redirect_stdout(f):
+            simulate(scenario, i)
     
     # Consolidate patient logs and compute summary stats
     patient_log_stats = process_sim_output(output_dir, scenario['scenario'])
@@ -95,4 +108,7 @@ def save_config_file(scenario):
 
 # Run simulations for each scenario
 for scenario in scenarios:
+    print(f"Running scenario: {scenario['scenario']}")
     run_simulation(scenario)
+    print(f"Finished scenario: {scenario['scenario']}")
+

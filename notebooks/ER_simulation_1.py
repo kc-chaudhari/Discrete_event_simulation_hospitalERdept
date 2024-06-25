@@ -10,7 +10,9 @@ class EmergencyRoom:
     def __init__(self, env, num_triage_nurses, num_doctors,
                  triage_time_mean, triage_time_sd,
                  treatment_time_mean, treatment_time_sd,
-                 discharge_time_mean, discharge_time_sd, rg):
+                 discharge_time_mean, discharge_time_sd, 
+                 registration_time_mean, registration_time_sd,
+                 triage_check_mean, triage_check_sd, rg):
         """
         Initialize the EmergencyRoom instance.
 
@@ -22,6 +24,14 @@ class EmergencyRoom:
             Number of triage nurses in the ER.
         num_doctors : int
             Number of doctors in the ER.
+        registration_time_mean : float
+            Mean time for registration process.
+        registration_time_sd : float
+            Standard deviation of registration process time.
+        triage_check_mean : float
+            Mean time for triage nurse check process.
+        triage_check_sd : float
+            Standard deviation of triage nurse check process time.
         triage_time_mean : float
             Mean time for triage process.
         triage_time_sd : float
@@ -55,6 +65,10 @@ class EmergencyRoom:
         self.treatment_time_sd = treatment_time_sd
         self.discharge_time_mean = discharge_time_mean
         self.discharge_time_sd = discharge_time_sd
+        self.registration_time_mean = registration_time_mean
+        self.registration_time_sd = registration_time_sd
+        self.triage_check_mean = triage_check_mean
+        self.triage_check_sd = triage_check_sd
 
         # Data collection
         self.timestamps_list = []
@@ -71,8 +85,12 @@ class EmergencyRoom:
     def update_stage_occupancy(self, stage, change):
         self.stage_occupancy[stage] += change
 
+    def register(self, patient):
+        delay = self.rg.exponential(self.registration_time_mean)  # Exponential distribution for registration all others are assumed normal distribution
+        yield self.env.timeout(delay)
+
     def triage_nurse_check(self, patient):
-        delay = max(0, self.rg.normal(10, 2.5))  # Ensure non-negative delay
+        delay = max(0, self.rg.normal(self.triage_check_mean, self.triage_check_sd))  # Ensure non-negative delay
         yield self.env.timeout(delay)
 
     def triage(self, patient):
@@ -94,55 +112,49 @@ class Patient:
         self.patient_id = patient_id
         self.env = env
         self.arrival_time = env.now
+        self.wait_for_registration = 0
         self.wait_for_triage_check = 0
         self.wait_for_triage = 0
         self.wait_for_treatment = 0
         self.departure_time = None
 
+    #record start times
+    def record_registration_start(self):
+        self.registration_start = self.env.now
+
     def get_arrival_timestamp(self):
-        """Get patient's arrival timestamp."""
         return self.arrival_time
 
     def record_triage_check_start(self):
-        """Record start time of triage nurse check."""
         self.triage_check_start = self.env.now
 
     def record_triage_start(self):
-        """Record start time of triage process."""
         self.triage_start = self.env.now
 
     def record_treatment_start(self):
-        """Record start time of treatment process."""
         self.treatment_start = self.env.now
 
     def record_departure(self):
-        """Record departure time."""
         self.departure_time = self.env.now
 
     def get_departure_timestamp(self):
-        """Get patient's departure timestamp."""
         return self.departure_time
 
 
 # Define the patient arrival process
 def patient_arrival(env, patient_id, er):
-    """
-    Simulate the arrival and treatment process of a patient.
-
-    Parameters
-    ----------
-    env : simpy.Environment
-        Simulation environment.
-    patient_id : int
-        Unique patient identifier.
-    er : EmergencyRoom
-        EmergencyRoom instance.
-    """
     patient = Patient(patient_id, env)
-    
+            
     # Increment overall occupancy
     er.increment_occupancy()
-    
+
+    # Register Patient
+    with er.triage_nurse.request() as request:
+        yield request
+        patient.wait_for_registration = env.now - patient.arrival_time
+        patient.record_registration_start()
+        yield env.process(er.register(patient))
+        
     # Update triage stage occupancy
     er.update_stage_occupancy('triage', 1)
 
@@ -162,17 +174,17 @@ def patient_arrival(env, patient_id, er):
         patient.wait_for_triage = env.now - (patient.arrival_time + patient.wait_for_triage_check)
         patient.record_triage_start()
         yield env.process(er.triage(patient))
-        er.update_stage_occupancy('triage', 1)  # Update triage occupancy when starting triage
+        er.update_stage_occupancy('triage', 1)  #occupancy 
 
     # Treatment Process
     with er.doctor.request() as request:
         yield request
         patient.wait_for_treatment = env.now - (patient.arrival_time + patient.wait_for_triage_check + patient.wait_for_triage)
         patient.record_treatment_start()
-        er.update_stage_occupancy('triage', -1)  # Update triage occupancy when leaving triage
-        er.update_stage_occupancy('treatment', 1)  # Update treatment occupancy when starting treatment
+        er.update_stage_occupancy('triage', -1)  
+        er.update_stage_occupancy('treatment', 1)  
         yield env.process(er.treatment(patient))  
-        er.update_stage_occupancy('treatment', -1)  # Update treatment occupancy when ending treatment
+        er.update_stage_occupancy('treatment', -1)  
 
     # Discharge
     with er.triage_nurse.request() as request:
@@ -184,6 +196,7 @@ def patient_arrival(env, patient_id, er):
     er.timestamps_list.append({
         'patient_id': patient.patient_id,
         'arrival_ts': patient.arrival_time,
+        'registration_start_ts': patient.registration_start,
         'triage_check_start_ts': patient.triage_check_start,
         'triage_start_ts': patient.triage_start,
         'treatment_start_ts': patient.treatment_start,
@@ -196,42 +209,31 @@ def patient_arrival(env, patient_id, er):
     # Print departure time
     print(f"Patient {patient.patient_id} departed at {patient.get_departure_timestamp()}")
 
-def run_er(env, er, stoptime=simpy.core.Infinity, max_arrivals=simpy.core.Infinity, quiet=False):
+def run_er(env, er, stoptime=simpy.core.Infinity, max_arrivals=simpy.core.Infinity, quiet=False): #set limits for simulation
     patient_id = 0
     while env.now < stoptime and patient_id < max_arrivals:
+        # Generate inter-arrival time based on exponential distribution
         iat = er.rg.exponential(5)
-        yield env.timeout(iat)
+        yield env.timeout(iat)  # Wait for inter-arrival time
+
         patient_id += 1
+        # Start a new process for patient arrival
         env.process(patient_arrival(env, patient_id, er))
 
     print(f"{patient_id} patients processed.")
 
 
 def compute_durations(timestamp_df):
+    timestamp_df['wait_for_registration'] = timestamp_df['registration_start_ts'] - timestamp_df['arrival_ts']
     timestamp_df['wait_for_triage_nurse'] = timestamp_df['triage_check_start_ts'] - timestamp_df['arrival_ts']
     timestamp_df['wait_for_triage'] = timestamp_df['triage_start_ts'] - timestamp_df['arrival_ts']
     timestamp_df['wait_for_treatment'] = timestamp_df['treatment_start_ts'] - timestamp_df['triage_start_ts']
     timestamp_df['time_in_system'] = timestamp_df['departure_ts'] - timestamp_df['arrival_ts']
     return timestamp_df
 
+#Simulate emergency room operations based on given parameters.
+def simulate(arg_dict, rep_num): 
 
-def simulate(arg_dict, rep_num):
-    """
-    Simulate emergency room operations based on given parameters.
-
-    Parameters
-    ----------
-    arg_dict : dict
-        Dictionary containing simulation parameters.
-    rep_num : int
-        Replication number of the simulation.
-
-    Returns
-    -------
-    None
-        Outputs CSV files containing simulation logs.
-
-    """
     seed = arg_dict['seed'] + rep_num - 1
     rg = default_rng(seed=seed)
     env = simpy.Environment()
@@ -242,6 +244,8 @@ def simulate(arg_dict, rep_num):
                        arg_dict['triage_time_mean'], arg_dict['triage_time_sd'],
                        arg_dict['treatment_time_mean'], arg_dict['treatment_time_sd'],
                        arg_dict['discharge_time_mean'], arg_dict['discharge_time_sd'],
+                       arg_dict['registration_time_mean'],arg_dict['registration_time_sd'],
+                       arg_dict['triage_check_mean'], arg_dict['triage_check_sd'],
                        rg)
 
     # Start simulation process
@@ -277,26 +281,9 @@ def simulate(arg_dict, rep_num):
     end_time = env.now
     print(f"Simulation replication {rep_num} ended at time {end_time}")
 
-
+#Consolidates patient log CSV files, computes summary statistics, and deletes individual log files.
 def process_sim_output(csvs_path, scenario):
-    """
-    Consolidates patient log CSV files, computes summary statistics, and deletes individual log files.
-
-    Parameters
-    ----------
-    csvs_path : Path object or str
-        Path to the directory containing simulation output patient log CSV files.
-    scenario : str
-        Scenario name.
-
-    Returns
-    -------
-    dict
-        Dictionary with keys:
-        - 'patient_log_rep_stats': DataFrame containing summary statistics for each replication.
-        - 'patient_log_ci': Dictionary containing overall statistics and confidence intervals.
-    """
-
+    
     # Define the destination path for the consolidated CSV file
     dest_path = csvs_path / f"consolidated_ER_patient_log_{scenario}.csv"
 
@@ -334,29 +321,12 @@ def process_sim_output(csvs_path, scenario):
         'patient_log_ci': {}  # Placeholder for patient_log_ci
     }
 
+#Summarizes patient log DataFrame by computing statistics and confidence intervals for each performance measure.
 
 def summarize_patient_log(patient_log_df, scenario):
-    """
-    Summarizes patient log DataFrame by computing statistics and confidence intervals for each performance measure.
-
-    Parameters
-    ----------
-    patient_log_df : pandas.DataFrame
-        DataFrame containing patient log data.
-    scenario : str
-        Scenario name.
-
-    Returns
-    -------
-    dict
-        Dictionary with keys:
-        - 'wait_for_triage_nurse': Dictionary with statistics and confidence intervals for wait time for triage nurse.
-        - 'wait_for_triage': Dictionary with statistics and confidence intervals for wait time for triage.
-        - 'wait_for_treatment': Dictionary with statistics and confidence intervals for wait time for treatment.
-        - 'time_in_system': Dictionary with statistics and confidence intervals for total time in system.
-    """
+    
     # Performance measures to summarize
-    performance_measures = ['wait_for_triage_nurse', 'wait_for_triage', 'wait_for_treatment', 'time_in_system']
+    performance_measures = ['wait_for_registration','wait_for_triage_nurse', 'wait_for_triage', 'wait_for_treatment', 'time_in_system']
 
     # Dictionary to store results
     patient_log_stats = {}
@@ -400,6 +370,10 @@ def process_command_line():
     parser = argparse.ArgumentParser(description='ER Simulation Parameters')
     parser.add_argument('--num_triage_nurses', type=int, default=5, help='Number of triage nurses')
     parser.add_argument('--num_doctors', type=int, default=5, help='Number of doctors')
+    parser.add_argument('--registration_time_mean', type=float, default=5, help='Mean registration time')
+    parser.add_argument('--registration_time_sd', type=float, default=1, help='Standard deviation of registration time')
+    parser.add_argument('--triage_check_mean', type=float, default=10, help='Mean triage check time')
+    parser.add_argument('--triage_check_sd', type=float, default=2.5, help='Standard deviation of triage check time')
     parser.add_argument('--triage_time_mean', type=float, default=5, help='Mean triage time')
     parser.add_argument('--triage_time_sd', type=float, default=1, help='Standard deviation of triage time')
     parser.add_argument('--treatment_time_mean', type=float, default=20, help='Mean treatment time')
