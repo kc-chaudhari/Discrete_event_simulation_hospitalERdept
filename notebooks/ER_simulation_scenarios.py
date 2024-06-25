@@ -21,6 +21,22 @@ scenarios = [
         'scenario': 'baseline',
         'quiet': True
     },
+     {
+        'num_triage_nurses': 5,
+        'num_doctors': 10,
+        'triage_time_mean': 5.0,
+        'triage_time_sd': 1.0,
+        'treatment_time_mean': 20.0,
+        'treatment_time_sd': 5.0,
+        'discharge_time_mean': 5.0,
+        'discharge_time_sd': 1.0,
+        'stoptime': 480,
+        'num_reps': 15,
+        'seed': 4470,
+        'output_path': 'output',
+        'scenario': 'n5d10',
+        'quiet': True
+    },
     # Add more scenarios here as needed
 ]
 
